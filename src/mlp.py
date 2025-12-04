@@ -1,5 +1,6 @@
 """
 Deep Learning Model (MLP) for HR Attrition Prediction.
+Refined with Tuned Hyperparameters.
 """
 
 import os
@@ -21,6 +22,18 @@ from utils import (
 # Set seeds for reproducibility
 tf.random.set_seed(42)
 np.random.seed(42)
+
+# ===  最佳超参数配置 (Best Hyperparameters) ===
+HYPERPARAMS = {
+    "num_layers": 3,
+    "units_layer_0": 96,
+    "units_layer_1": 160,
+    "units_layer_2": 32,
+    "dropout_rate": 0.2,
+    "learning_rate": 0.01,
+    "batch_norm": True,
+    "optimizer": "Adam"
+}
 
 def load_processed_data():
     """Load the processed data saved by eda_preprocess.py."""
@@ -44,40 +57,43 @@ def load_processed_data():
 
 def build_mlp_model(input_dim):
     """
-    Build a Multi-Layer Perceptron (MLP) model.
-    Structure: Input -> Dense -> BatchNorm -> ReLU -> Dropout -> Output
+    Build MLP model using the BEST Tuned Hyperparameters.
+    Config: 3 Layers [96, 160, 32], LR=0.01, Dropout=0.2
     """
     model = Sequential([
         # 显式定义输入层
         Input(shape=(input_dim,)),
 
-        # 第一层隐藏层
-        Dense(64, activation='relu'),
+        # === Layer 0 (96 units) ===
+        Dense(HYPERPARAMS['units_layer_0'], activation='relu'),
+        BatchNormalization(), # Batch Norm: True
+        Dropout(HYPERPARAMS['dropout_rate']), # Dropout: 0.2
+
+        # === Layer 1 (160 units) ===
+        Dense(HYPERPARAMS['units_layer_1'], activation='relu'),
         BatchNormalization(),
-        Dropout(0.3),
+        Dropout(HYPERPARAMS['dropout_rate']),
 
-        # 第二层隐藏层
-        Dense(32, activation='relu'),
+        # === Layer 2 (32 units) ===
+        Dense(HYPERPARAMS['units_layer_2'], activation='relu'),
         BatchNormalization(),
-        Dropout(0.2),
+        Dropout(HYPERPARAMS['dropout_rate']),
 
-        # 第三层隐藏层
-        Dense(16, activation='relu'),
-
-        # 输出层：二分类使用 Sigmoid
+        # === Output Layer ===
         Dense(1, activation='sigmoid')
     ])
 
-    # 编译模型
-    optimizer = Adam(learning_rate=0.001)
+    # 编译模型 (Learning Rate = 0.01)
+    optimizer = Adam(learning_rate=HYPERPARAMS['learning_rate'])
+
     model.compile(optimizer=optimizer,
                   loss='binary_crossentropy',
                   metrics=['accuracy', tf.keras.metrics.AUC(name='auc')])
 
     return model
 
-def update_model_summary(model_name, metrics):
-    """Update or create model summary JSON."""
+def update_model_summary(model_name, metrics, params=None):
+    """Update or create model summary JSON with metrics AND params."""
     # 路径：项目根目录/model/model_summary.json
     summary_path = os.path.join(
         os.path.dirname(os.path.dirname(__file__)),
@@ -94,8 +110,13 @@ def update_model_summary(model_name, metrics):
     else:
         summary = {}
 
-    # Update with new model metrics
-    summary[model_name] = metrics
+    # Combine metrics and parameters
+    entry = metrics.copy()
+    if params:
+        entry['hyperparameters'] = params
+
+    # Update dictionary
+    summary[model_name] = entry
 
     # Save updated summary
     save_json(summary, summary_path)
@@ -103,8 +124,9 @@ def update_model_summary(model_name, metrics):
 
 def train_model():
     print("\n" + "="*80)
-    print("DEEP LEARNING MODEL TRAINING (MLP)")
+    print("DEEP LEARNING MODEL TRAINING (TUNED MLP)")
     print("="*80)
+    print(f"Using Hyperparameters: {HYPERPARAMS}")
 
     # 1. 准备数据
     X, y = load_processed_data()
@@ -129,22 +151,23 @@ def train_model():
     class_weight_dict = dict(enumerate(class_weights))
     print(f"\nClass Weights computed: {class_weight_dict}")
 
-    # 3. 构建模型
+    # 3. 构建模型 (使用调优后的结构)
     model = build_mlp_model(input_dim=X_train.shape[1])
     model.summary()
 
     # 4. 设置回调函数
     callbacks = [
-        EarlyStopping(monitor='val_loss', patience=10, restore_best_weights=True, verbose=1),
+        EarlyStopping(monitor='val_loss', patience=15, restore_best_weights=True, verbose=1),
+        # 既然初始学习率很大(0.01)，我们允许它在只有微小停滞时就减小学习率
         ReduceLROnPlateau(monitor='val_loss', factor=0.5, patience=5, min_lr=0.00001, verbose=1)
     ]
 
     # 5. 开始训练
-    print("\nStarting training...")
+    print("\nStarting training with Tuned Hyperparameters...")
     history = model.fit(
         X_train, y_train,
         validation_data=(X_val, y_val),
-        epochs=100,
+        epochs=150, # 稍微增加轮数，因为模型变复杂了
         batch_size=32,
         callbacks=callbacks,
         class_weight=class_weight_dict,
@@ -161,27 +184,26 @@ def train_model():
     y_pred = (y_pred_proba > 0.5).astype(int)
 
     # 计算并打印指标
-    metrics = print_metrics(y_test, y_pred, y_pred_proba, model_name="Deep Learning MLP")
+    metrics = print_metrics(y_test, y_pred, y_pred_proba, model_name="MLP")
 
     # 7. 保存结果
-    # 统一保存到 model/ 目录下
     model_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'model')
     ensure_directories(model_dir)
 
     # 保存 ROC 曲线
     roc_path = os.path.join(model_dir, 'mlp_roc.png')
-    plot_roc_curve(y_test, y_pred_proba, "Deep Learning MLP", roc_path)
+    plot_roc_curve(y_test, y_pred_proba, "MLP", roc_path)
 
     # 保存模型文件 (.h5)
     model_path = os.path.join(model_dir, 'mlp_model.h5')
     model.save(model_path)
     print(f"\nModel saved to: {model_path}")
 
-    # 更新 Model Summary JSON
-    update_model_summary('mlp', metrics)
+    # 更新 Model Summary JSON (包含参数！)
+    update_model_summary('mlp', metrics, params=HYPERPARAMS)
 
     print("\n" + "="*80)
-    print("MLP TRAINING COMPLETED")
+    print("TUNED MLP TRAINING COMPLETED")
     print("="*80 + "\n")
 
     return history
